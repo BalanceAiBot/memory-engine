@@ -1,349 +1,119 @@
-# 🧠 语义记忆引擎 (Memory Engine)
+# 🧠 Memory Engine (语义记忆引擎)
 
-中文优化的轻量级语义记忆引擎，基于 embedding + FAISS + SQLite。为 AI 助手提供长期语义记忆能力。
+**Status:** Production Ready ✅  
+**Version:** 2.0 (Hybrid Search + Time Decay)  
+**Platform:** Apple Silicon (M-Series) Native
 
-## 特性
+A high-performance semantic memory system for AI agents. Combines **Vector Search**, **BM25 Keyword Search**, and **Time Decay** to provide precise, context-aware memory retrieval.
 
-- 🇨🇳 **中文优化** — 使用 BAAI/bge-small-zh-v1.5，~90MB 轻量模型
-- 🖥️ **全 CPU 运行** — 零 CUDA 依赖，Apple Silicon 原生支持
-- 🔍 **语义检索** — FAISS 向量索引，毫秒级相似度搜索
-- 🧩 **智能分块** — 按段落/句子边界切分，不截断语义
-- 🔗 **多跳检索** — Memory Interleave：检索→精炼→再检索
-- 📦 **增量更新** — 新记忆追加入库，无需重建索引
-- 💾 **持久化** — SQLite + FAISS 磁盘存储，重启可加载
-- 🚚 **迁移工具** — 自动从现有 MEMORY.md 文件迁移
+## ✨ 核心特性 (Features)
 
-## 项目结构
+### 1. 混合检索 (Hybrid Search - RRF)
+结合 **向量语义 (bge-base-zh)** 和 **BM25 关键词** 的优势。
+- **语义理解**: 能听懂"上次修了啥" (映射到"修复/审计记录")。
+- **关键词精准匹配**: 搜端口号 (8080)、版本号或具体报错代码时，精准度 100%。
 
-```
-memory-engine/
-├── src/
-│   ├── __init__.py          # 包入口
-│   ├── engine.py            # MemoryEngine 主类（统一入口）
-│   ├── embedder.py          # Embedding 模型封装
-│   ├── chunker.py           # 智能分块器
-│   ├── indexer.py           # FAISS 索引管理
-│   ├── store.py             # SQLite 元数据存储
-│   ├── retriever.py         # 检索器（含多跳推理）
-│   └── migrator.py          # 从 MEMORY.md 迁移
-├── config.py                # 全局配置
-├── cli.py                   # 命令行工具
-├── requirements.txt
-├── README.md
-└── tests/
-    └── test_engine.py       # 完整测试套件
-```
+### 2. 智能查询扩展 (Query Expansion)
+内置口语-书面语映射，AI Agent 无需理解黑话也能搜到结果。
+- "挂了/崩了" ➡️ "崩溃/错误/失败"
+- "慢了/卡" ➡️ "延迟/性能"
+- "上次" ➡️ "最近" (触发时间衰减机制)
 
-## 快速开始
+### 3. 时间衰减策略 (Smart Time Decay)
+根据查询意图自动调整"新鲜度"权重：
+- **故障排查类查询** (如 "报错", "修了啥")：**强衰减**。优先返回最近 7 天的日志，旧日志降权。
+- **事实架构类查询** (如 "架构", "工具")：**弱衰减**。确保历史文档不被过滤。
 
-### 1. 安装依赖
+### 4. 类别优先权 (Category Boost)
+针对技术类查询，自动提升 `maintenance_log` (维护日志) 和 `dev_tool` (开发工具) 的权重，过滤掉 `user_profile` (用户画像) 等无关噪音。
 
-```bash
-pip install -r requirements.txt
-```
+### 5. 零依赖运行 (Zero-Dependency Core)
+核心 BM25 引擎完全手写 (纯 Python)，不依赖 `jieba` 或外部库，确保在网络波动或环境受限时依然稳定运行。
 
-### 2. 迁移现有记忆
+---
 
-```bash
-python cli.py migrate
-```
+## 🚀 架构模式 (Architecture)
 
-### 3. 检索记忆
-
-```bash
-python cli.py query "用户的工作方向是什么？" --top-k 5
-```
-
-### 4. 入库新记忆
-
-```bash
-python cli.py ingest "用户新增了一条重要规则" --category security_rule
-```
-
-## API 使用
-
-### Python API
-
-```python
-from src.engine import MemoryEngine
-
-# 初始化
-engine = MemoryEngine(db_path="~/.hermes/memories/memory.db")
-
-# 入库
-engine.ingest("用户希望系统能盈利", category="user_goal", source="MEMORY.md")
-
-# 批量入库
-engine.ingest_batch([
-    {"text": "安全规则：不外发信息", "category": "security_rule", "source": "cli"},
-    {"text": "开发工具：Claude Code", "category": "dev_tool", "source": "cli"},
-])
-
-# 语义检索
-results = engine.query("用户的目标是什么？", top_k=5)
-for r in results:
-    print(f"[{r['score']:.4f}] {r['text']}")
-
-# 多跳检索（检索→精炼→再检索）
-results = engine.query_interleave("最近有什么安全问题？", top_k=5, rounds=2)
-
-# 限定类别检索
-results = engine.query_by_category("工作", "dev_tool", top_k=3)
-
-# 统计
-stats = engine.stats()
-print(stats)
-# {"total_chunks": 120, "categories": {"user_profile": 7, ...}, ...}
-
-# 按类别列出
-items = engine.list_by_category("security_rule")
-
-# 删除
-engine.delete(chunk_id=1)
-
-# 重建索引
-engine.rebuild_index()
-
-# 迁移
-engine.migrate_from_hermes_memory("~/.hermes/memories/MEMORY.md")
-engine.migrate_from_openclaw_memory("~/.openclaw/workspace/MEMORY.md")
-engine.migrate_all()  # 迁移所有可用源
-```
-
-## CLI 命令
-
-| 命令 | 说明 | 示例 |
-|------|------|------|
-| `ingest` | 入库记忆 | `python cli.py ingest "记忆内容" -c user_goal` |
-| `query` | 语义检索 | `python cli.py query "用户目标" -k 5` |
-| `query -i` | 多跳检索 | `python cli.py query "安全问题" -i` |
-| `migrate` | 迁移记忆 | `python cli.py migrate` |
-| `stats` | 查看统计 | `python cli.py stats` |
-| `list` | 列出记忆 | `python cli.py list -c security` |
-| `delete` | 删除记忆 | `python cli.py delete 1` |
-| `rebuild` | 重建索引 | `python cli.py rebuild` |
-
-## 分类体系
-
-| 分类 | 说明 | 示例 |
-|------|------|------|
-| `identity` | 身份信息 | 名字、模型版本、上线时间 |
-| `user_profile` | 用户画像 | 工作方向、时区、目标 |
-| `security_rule` | 安全规则 | 不外发信息、权限控制 |
-| `dev_tool` | 开发工具 | Claude Code、Codex 等 |
-| `project_memory` | 项目记忆 | BrowserWing、daily-report |
-| `maintenance_log` | 维护记录 | 版本更新、修复日志 |
-| `learning_note` | 学习笔记 | OpenClaw 课程笔记 |
-| `general` | 通用 | 未分类内容 |
-
-## 架构说明
+Memory Engine 采用 **C/S 架构** (Client/Server) 以消除模型加载延迟：
 
 ```
-┌─────────────────────────────────────────────┐
-│                MemoryEngine                  │
-├─────────────────────────────────────────────┤
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐ │
-│  │ Embedder │  │ Chunker  │  │  Migrator │ │
-│  │ (bge-zh) │  │(智能分块)│  │(格式解析) │ │
-│  └────┬─────┘  └────┬─────┘  └─────┬─────┘ │
-│       │              │              │        │
-│       ▼              ▼              ▼        │
-│  ┌──────────────────────────────────────┐   │
-│  │            VectorIndex               │   │
-│  │          (FAISS CPU)                 │   │
-│  └──────────────────────────────────────┘   │
-│                     │                        │
-│                     ▼                        │
-│  ┌──────────────────────────────────────┐   │
-│  │            Retriever                 │   │
-│  │      (语义搜索 + 多跳推理)             │   │
-│  └──────────────────────────────────────┘   │
-│                     │                        │
-│                     ▼                        │
-│  ┌──────────────────────────────────────┐   │
-│  │          MetadataStore               │   │
-│  │           (SQLite)                   │   │
-│  └──────────────────────────────────────┘   │
-└─────────────────────────────────────────────┘
+[Hermes Agent / Client]  <--HTTP (Port 54321)-->  [Memory Engine Server]
+      |                                                  |
+      |-- memory(action="search")                        |-- BAAI/bge-base-zh (Embedding)
+      |                                                  |-- Custom BM25 (Keywords)
+      |                                                  |-- RRF Fuser + Time Decay
 ```
 
-### 工作流程
+---
 
-1. **入库**: 文本 → 智能分块 → Embedding → FAISS 索引 + SQLite 元数据
-2. **检索**: 查询 → Embedding → FAISS Top-K 搜索 → SQLite 回填元数据
-3. **多跳**: 首轮检索 → 用 top-1 结果精炼 query → 再检索 → 融合去重
+## 🛠️ 部署与运行 (Deployment)
 
-## 技术选型
-
-| 组件 | 选择 | 理由 |
-|------|------|------|
-| Embedding | BAAI/bge-small-zh-v1.5 | 中文优化、轻量(~90MB)、512维 |
-| 向量索引 | FAISS (IndexFlatIP) | 快速、CPU 友好、持久化 |
-| 元数据 | SQLite | Python 内置、零依赖、WAL 模式 |
-| 分块 | 自定义规则引擎 | 按段落/句子边界，不截断语义 |
-| CLI | Click + Rich | 美观、类型安全 |
-
-## 运行测试
+### 1. 启动服务端 (Server)
+Memory Engine 需要作为后台服务常驻运行，以保持模型在内存中（实现毫秒级响应）。
 
 ```bash
 cd ~/Desktop/clawCoder/memory-engine
-python -m pytest tests/test_engine.py -v
-# 或
-python tests/test_engine.py
+
+# 推荐：后台启动 (使用 nohup)
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 nohup /opt/homebrew/bin/python3.11 server.py > /tmp/me.log 2>&1 &
+
+# 检查健康状态
+curl http://127.0.0.1:54321/health
+# 返回: {"status": "ok"}
 ```
 
-## 注意事项
+### 2. 客户端集成 (Integration)
+Agent 端通过 HTTP 请求调用 API。
 
-- 首次运行会自动下载 embedding 模型（~90MB），缓存到 `~/.cache/huggingface/`
-- 数据库和索引文件默认存储在 `~/.hermes/memories/`
-- 迁移不会删除原始 MEMORY.md 文件
-- 增量入库时只需调用 `ingest()`，索引自动追加
-
-## 自动化维护
-
-本项目提供了自动化记忆维护脚本。
-
-### Heartbeat 集成
-```bash
-# 在 heartbeat 中定期执行
-/opt/homebrew/bin/python3.11 ~/Desktop/clawCoder/memory-engine/heartbeat_memory.py
-```
-自动完成：
-- ✅ 文件变更同步（检查 MEMORY.md 更新）
-- ✅ 重复检测与清理
-## 部署与运维
-详细的服务管理、故障排查指南见 [DEPLOYMENT.md](./DEPLOYMENT.md)
-
-## 数据备份与恢复
-Memory Engine 的数据存储在 `~/.hermes/memories/`：
-```bash
-# 备份
-mkdir -p ~/backups/memory/$(date +%Y%m%d)
-cp ~/.hermes/memories/memory.db ~/backups/memory/$(date +%Y%m%d)/
-cp ~/.hermes/memories/faiss.index ~/backups/memory/$(date +%Y%m%d)/
-```
-
-## 数据库结构
-SQLite 表结构、FAISS 索引格式详见 [DATABASE.md](./DATABASE.md)
-
-## 更新日志
-版本变更记录见 [CHANGELOG.md](./CHANGELOG.md)
-
-## 集成到 Hermes Agent
-
-本项目已与 Hermes Agent 的 `memory` 工具无缝集成。
-## 集成到 Hermes Agent
-
-本项目已与 Hermes Agent 的 `memory` 工具无缝集成。
-
-### 1. 修改记忆工具代码
-**目标文件**: `~/.hermes/hermes-agent/tools/memory_tool.py`
-
-> **优化说明**：为了达到毫秒级响应，我们使用 **HTTP Server** 模式进行通信，而不是 `subprocess`。
-> 确保 Memory Engine Server (`server.py`) 已经运行。
-
-#### A. 添加极速搜索函数
-在文件顶部（`MemoryStore` 类定义之后）添加 `_semantic_search` 函数：
 ```python
-# =============================================================================
-# Semantic Search via Memory Engine (HTTP Server Mode)
-# =============================================================================
+import urllib.request
+import urllib.parse
 
-_SERVER_URL = "http://127.0.0.1:8089"  # Ensure this matches server.py port
-
-def _semantic_search(query: str, top_k: int = 5) -> Dict[str, Any]:
-    """Use Memory Engine for semantic search via high-speed HTTP server."""
-    import urllib.request
-    from urllib.parse import quote
-    import json
-    
-    url = f"{_SERVER_URL}/search?q={quote(query)}&k={top_k}"
-    
+def search_memory(query: str, top_k: int = 3):
+    url = f"http://127.0.0.1:54321/search?q={urllib.parse.quote(query)}&k={top_k}"
     try:
-        req = urllib.request.Request(url)
-        with urllib.request.urlopen(req, timeout=5) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            
-            if data.get('success'):
-                return {
-                    "success": True,
-                    "query": query,
-                    "result_count": data.get('result_count', 0),
-                    "results": data.get('results', []),
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": data.get('error', 'Unknown server error'),
-                }
-                
-    except urllib.error.URLError as e:
-        if hasattr(e, 'reason') and 'Connection refused' in str(e.reason):
-            return {
-                "success": False,
-                "error": "Memory Server is offline. Please restart it.",
-            }
-        return {"success": False, "error": f"Network error: {e.reason}"}
+        with urllib.request.urlopen(url, timeout=5) as response:
+            data = json.loads(response.read())
+            return data.get('results', [])
     except Exception as e:
-        return {"success": False, "error": f"Request failed: {str(e)}"}
+        return None
 ```
 
-#### B. 扩展 `memory_tool` 函数
-找到 `memory_tool` 函数，在 `remove` 动作之后添加 `search` 处理：
-```python
-    elif action == "search":
-        if not content:
-            return tool_error("content (query) is required for 'search' action.", success=False)
-        result = _semantic_search(content, top_k=5)
-        return json.dumps(result, ensure_ascii=False)
+---
+
+## 📂 项目结构
+
+```text
+memory-engine/
+├── server.py            # HTTP 服务入口 (常驻进程)
+├── config.py            # 配置中心 (模型路径, 维度)
+├── src/
+│   ├── engine.py        # MemoryEngine 主控制器
+│   ├── embedder.py      # 模型封装 (支持离线模式)
+│   ├── retriever.py     # 检索器 (混合算法, 时间衰减, 类别加权)
+│   ├── bm25.py          # 零依赖 BM25 实现
+│   └── ...
+├── scripts/
+│   └── clean_memory.py  # 数据清洗工具
+└── tests/               # 测试用例
 ```
 
-#### C. 更新 Schema
-修改 `MEMORY_SCHEMA` 定义，将 `action` 的 `enum` 从 `["add", "replace", "remove"]` 改为 `["add", "replace", "remove", "search"]`。
+---
 
-### 2. 更新系统指令
-在 `AGENTS.md` 和 `SOUL.md` 中添加语义检索的强制指令：
-> "When the user asks about past events... USE THE TOOL: `memory(action='search', content='query')`"
+## ⚙️ 高级配置
 
-### 3. 生效方式
-- **重启**: 修改代码后必须重启 Hermes Agent (`launchctl kickstart -k ...`)。
-- **验证**: 询问 Agent "上次审计修了什么"，应能触发 `memory` 工具调用。
+### 停用词表 (Stop Words)
+在 `src/bm25.py` 中维护。过滤掉"关于"、"系统"、"用户"等高频无意义词，提高技术词汇的命中率。
 
-### 量化对比
+### 查询扩展映射
+在 `src/retriever.py` 的 `_expand_query` 方法中维护。可根据实际使用习惯添加新的口语映射。
 
-| 指标 | 旧系统（纯文本） | 新系统（Memory Engine） | 变化 |
-|------|-----------------|------------------------|------|
-| MEMORY.md 行数 | 326 行 | 44 行 | ↓ **87%** |
-| 文件大小 | 15.4 KB | 2.1 KB | ↓ **86%** |
-| 每次会话 token | ~2521 | ~637 | ↓ **75%** |
-| 可检索条目 | 1（全文） | 64 | ↑ **64x** |
-| 检索精度 | 关键词匹配 | 语义理解（0.82 平均相关度） | 质的飞跃 |
+---
 
-### 检索延迟（Apple M4）
+## 📝 数据备份
 
-| 场景 | 冷启动 | 热启动 |
-|------|--------|--------|
-| 首次查询 | ~1667ms（模型加载） | — |
-| 后续查询 | — | ~3ms |
-| 平均相关度 | — | 0.817 |
+记忆数据存储在 `~/.hermes/memories/`。
+- `memory.db`: SQLite 数据库 (元数据 + 文本)
+- `faiss.index`: 向量索引文件
 
-### 架构差异
-
-**旧系统**：纯文本 `§` 分隔 → 每次全文加载 → 关键词匹配
-
-**新系统**：文本精简版（核心记忆）+ 向量索引（扩展记忆）→ 语义检索按需加载
-
-### 为什么双写（文本 + 向量）
-
-| 维度 | 纯文本 | 纯向量 | 双写 |
-|------|--------|--------|------|
-| 开机自检 | ✅ 0 延迟 | ❌ 需要查询 | ✅ 0 延迟 |
-| 语义检索 | ❌ 不支持 | ✅ 支持 | ✅ 支持 |
-| 可靠性 | ✅ 纯文本 | ❌ 依赖模型 | ✅ 文本兜底 |
-| 维护成本 | 低 | 中 | 中 |
-
-双写是可靠性和功能性的最佳平衡：文本层保证系统启动就有基础记忆，向量层提供按需扩展的深度检索。
-
-## 许可证
-
-MIT
+建议定期备份这两个文件。
