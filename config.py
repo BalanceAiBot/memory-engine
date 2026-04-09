@@ -3,8 +3,10 @@ import os
 from pathlib import Path
 
 # ── 模型 ──
-EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"  # 中文优化，~90MB
-EMBEDDING_DIM = 512
+# 升级到 bge-base-zh-v1.5：参数更大 (420MB)，精度更高 (768 维)
+# 能更精准区分"安全规则"与"安全问题"，大幅降低检索噪音
+EMBEDDING_MODEL = "BAAI/bge-base-zh-v1.5"
+EMBEDDING_DIM = 768
 
 # ── 分块 ──
 CHUNK_MIN_CHARS = 30          # 最小块字符数（过滤噪音）
