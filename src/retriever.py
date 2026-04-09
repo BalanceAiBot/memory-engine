@@ -97,33 +97,36 @@ class Retriever:
                 query = query.replace(k, v)
         return query
 
-    def _get_freshness_score(self, text: str) -> float:
+    def _get_freshness_score(self, text: str, query: str = "") -> float:
         """
         计算时间衰减分数。
-        包含最近日期的记忆将获得更高权重。
+        针对不同类型的查询，衰减策略不同。
         """
         import re
         import datetime
-        # 匹配 2026-03-26 格式的日期
         dates = re.findall(r'(\d{4})-(\d{2})-(\d{2})', text)
         if not dates:
-            return 1.0 # 没有日期，不衰减也不加分
+            return 1.0
 
-        # 取最新的日期
         latest = max([datetime.date(int(y), int(m), int(d)) for y, m, d in dates])
-        today = datetime.date.today() # 假设当前时间是 2026-04-09
-        # 如果是 2026-04-01，差 8 天
-        # 为了测试方便，假设今天是 2026-04-09
-        # days_diff = (datetime.date(2026, 4, 9) - latest).days
-        # 实际上我们直接用 datetime.date.today()，如果今天是 2026-04-09 就对了
-        # 如果环境日期不对，我们手动 fix 一下
-        days_diff = (today - latest).days
+        today = datetime.date.today()
+        days_diff = max(0, (today - latest).days)
         
-        if days_diff < 0: days_diff = 0
+        # 智能衰减策略
+        # 1. 如果是查询“故障/修复/审计” (Tech Query)，强衰减 (用户关心最近的)
+        # 2. 如果是查询“架构/工具/定义” (Fact Query)，弱衰减 (知识不会过期)
         
-        # 简单的衰减公式：1 / (1 + alpha * days)
-        # 3 天内 1.0, 1 周后 0.5, 1 月后 0.2
-        return 1.0 / (1.0 + 0.1 * days_diff)
+        tech_keywords = ["修", "错", "崩", "挂", "问题", "审计", "延迟", "慢", "bug", "死锁", "超时", "日志"]
+        is_tech_query = any(kw in query for kw in tech_keywords)
+        
+        if is_tech_query:
+            # 强衰减：1周后降为一半
+            # 1.0 / (1 + 0.1 * 7) approx 0.5
+            return 1.0 / (1.0 + 0.1 * days_diff)
+        else:
+            # 弱衰减：1个月后才明显降低
+            # 1.0 / (1 + 0.01 * 30) approx 0.76
+            return 1.0 / (1.0 + 0.01 * days_diff)
 
     def search(
         self,
@@ -187,7 +190,8 @@ class Retriever:
             if is_tech_query:
                 if category == 'maintenance_log': category_boost = 3.0  # 大幅提高维护日志权重
                 elif category == 'dev_tool': category_boost = 2.0
-                elif category == 'user_profile': category_boost = 0.5  # 降低用户画像权重 (噪音过滤)
+                elif category == 'user_profile': category_boost = 0.5  # 降低用户画像权重
+                elif category == 'learning_note': category_boost = 0.7 # 降低学习笔记权重 (非紧急故障)
             
             rrf_results[cid] = rrf_results.get(cid, 0) + score_rrf * category_boost
 
