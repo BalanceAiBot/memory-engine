@@ -56,12 +56,17 @@ class Retriever:
         print(f"[BM25] Rebuilding index with {len(chunks)} chunks.")
         if not chunks:
             self.bm25 = None
+            self.bm25_corpus_tokens = []
+            self.chunk_id_to_index = {}
             return
 
-        # 预处理语料
+        # 建立 chunk_id -> index 的映射
+        self.chunk_id_to_index = {}
         self.bm25_corpus_tokens = []
-        for c in chunks:
-            # Use SimpleBM25 internal tokenizer
+        
+        for i, c in enumerate(chunks):
+            cid = c['chunk_id']
+            self.chunk_id_to_index[cid] = i
             self.bm25_corpus_tokens.append(c['text'])
 
         self.bm25 = SimpleBM25(self.bm25_corpus_tokens)
@@ -114,7 +119,11 @@ class Retriever:
         vec_hits = self.index.search(query_vec, vec_top_k)
         print(f"[DEBUG] Vec Hits: {len(vec_hits)}", file=sys.stderr)
         if vec_hits:
-            print(f"[DEBUG] Top Vec Hit: {vec_hits[0]}", file=sys.stderr)
+            print(f"[DEBUG] Top Vec Hit (ID, Score): {vec_hits[0]}", file=sys.stderr)
+            # Print all vec hits to see if there are duplicates
+            print(f"[DEBUG] All Vec Hits:", file=sys.stderr)
+            for rank, (cid, score) in enumerate(vec_hits):
+                print(f"  Rank {rank}: ID={cid} VecScore={score:.3f}", file=sys.stderr)
         
         if not vec_hits:
             return []
@@ -122,58 +131,53 @@ class Retriever:
         # 2. BM25 检索 (关键词兜底)
         bm25_scores = {}
         if hybrid and self.bm25:
-            # ... (existing code)
-            # DEBUG
-            # print(f"[DEBUG] Query: {query}, BM25 Top: {bm25_sorted[:3]}")
-            # BM25 返回的是 (index, score) 列表
-            # 注意: SimpleBM25.search 需要 query 和 corpus_tokens
-            # 我们的 corpus_tokens 就是 chunks 的 text
-            # 为了对齐 ID，我们需要把 chunks 的 chunk_id 映射到 BM25 的 index
-            
-            all_chunks = self.store.get_all_chunks()
-            if len(all_chunks) != len(self.bm25_corpus_tokens):
-                # 如果索引和数据库不一致，刷新 BM25
-                self.update_bm25_index(all_chunks)
-            
             # 计算 BM25 分数
             bm25_ranked = self.bm25.search(query, self.bm25_corpus_tokens, top_k * 3)
-            # bm25_ranked is list of (index_in_corpus, score)
             
-            # Map corpus index back to chunk_id
+            # Map corpus index back to chunk_id using the map
+            index_to_chunk_id = {v: k for k, v in self.chunk_id_to_index.items()}
+            
             for idx, score in bm25_ranked:
-                if idx < len(all_chunks):
-                    chunk_id = all_chunks[idx]['chunk_id']
-                    bm25_scores[chunk_id] = score
+                if idx in index_to_chunk_id:
+                    chunk_id = index_to_chunk_id[idx]
+                    if score > 0: # 只有匹配到关键词的才计入
+                        bm25_scores[chunk_id] = score
 
-        # 3. 融合结果 (RRF - Reciprocal Rank Fusion)
-        # Score = (alpha * vec_rank_score) + ((1-alpha) * bm25_rank_score)
-        # 简化版: 直接使用 RRF
-        
+        # 4. 融合结果 (RRF - Reciprocal Rank Fusion)
         rrf_results = {}
         k = 60  # RRF 常数
 
-        # 处理向量结果
+        # 处理向量结果 (权重 1.0)
         vec_chunk_ids = [cid for cid, _ in vec_hits]
         vec_chunks = self.store.get_chunks_by_ids(vec_chunk_ids)
         vec_map = {c['chunk_id']: c for c in vec_chunks}
 
         for rank, (cid, score) in enumerate(vec_hits):
-            if score < min_score and not hybrid: # Pure vector mode threshold
+            if score < min_score and not hybrid: 
                 continue
             
-            # RRF 贡献: 1 / (k + rank)
-            # 同时保留原始分数用于加权 (可选)
+            # 向量检索权重
             rrf_results[cid] = rrf_results.get(cid, 0) + 1.0 / (k + rank)
 
-        # 处理 BM25 结果
+        # 处理 BM25 结果 (权重 2.0 - 关键词命中更可信)
         if hybrid and self.bm25:
-            # 重新计算 BM25 排序用于 RRF
             bm25_sorted = sorted(bm25_scores.items(), key=lambda x: x[1], reverse=True)
+            print(f"[DEBUG] BM25 Sorted (Top 3): {bm25_sorted[:3]}", file=sys.stderr)
             for rank, (cid, _) in enumerate(bm25_sorted):
-                rrf_results[cid] = rrf_results.get(cid, 0) + 1.0 / (k + rank)
+                bm25_weight = 3.0 
+                rrf_results[cid] = rrf_results.get(cid, 0) + bm25_weight / (k + rank)
+                if cid == 9:
+                    print(f"[DEBUG] ID=9 updated by BM25. New Score: {rrf_results[cid]:.4f}", file=sys.stderr)
 
         # 4. 排序并回填元数据
         final_chunk_ids = sorted(rrf_results, key=lambda x: rrf_results[x], reverse=True)[:top_k]
+        
+        # DEBUG: Print Top 5 RRF scores
+        print(f"[DEBUG] Top 5 RRF Results:", file=sys.stderr)
+        for cid in sorted(rrf_results, key=lambda x: rrf_results[x], reverse=True)[:5]:
+            meta = self.store.get_chunk(cid)
+            text_preview = meta['text'][:30] if meta else "Unknown"
+            print(f"  ID={cid} Score={rrf_results[cid]:.4f} Text={text_preview}", file=sys.stderr)
         final_chunks = self.store.get_chunks_by_ids(final_chunk_ids)
         chunk_map = {c['chunk_id']: c for c in final_chunks}
 

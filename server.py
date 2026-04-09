@@ -46,6 +46,13 @@ class MemoryHandler(BaseHTTPRequestHandler):
         if parsed.path == '/search':
             print(f"[SERVER] Raw Path: {self.path}", file=sys.stderr)
             query = parse_qs(parsed.query).get('q', [''])[0]
+            # 修复可能的 URL 编码问题 (Mojibake Fix)
+            try:
+                if len(query) > 4 and '\xe4' in query:
+                    query = query.encode('latin-1').decode('utf-8')
+            except:
+                pass
+            print(f"[SERVER] Fixed Query: {query}", file=sys.stderr)
             print(f"[SERVER] Decoded Query: {query}", file=sys.stderr)
             top_k = int(parse_qs(parsed.query).get('k', ['5'])[0])
             
@@ -57,6 +64,13 @@ class MemoryHandler(BaseHTTPRequestHandler):
                 # 使用混合检索
                 print(f"[SERVER] Query: {query}")
                 results = engine.query(query, top_k=top_k)
+                
+                # DEBUG: Print BM25 state
+                if hasattr(engine.retriever, 'bm25') and engine.retriever.bm25:
+                    bm25 = engine.retriever.bm25
+                    # Print IDF of key words
+                    for word in ['修复', '安全', '审计', '上线']:
+                        print(f"[DEBUG] BM25 IDF('{word}'): {bm25.idf.get(word, 0.0)}", file=sys.stderr)
                 print(f"[SERVER] Results: {len(results)}")
                 if results:
                     print(f"[SERVER] Top 1: {results[0]['category']} - {results[0]['text'][:30]}")

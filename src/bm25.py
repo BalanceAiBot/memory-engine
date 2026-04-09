@@ -98,12 +98,7 @@ class SimpleBM25:
         return f
 
     def get_scores(self, query, corpus_tokens):
-        """
-        计算 query 与整个 corpus 的相关性分数列表。
-        :param query: 查询字符串
-        :param corpus_tokens: 预分词后的语料列表 list[list[str]]
-        :return: 分数列表
-        """
+        """计算 query 与整个 corpus 的相关性分数列表。"""
         query_tokens = self._tokenize(query)
         scores = []
         
@@ -114,8 +109,11 @@ class SimpleBM25:
         query_weights = {}
         for token in query_tokens:
             idf = self.idf.get(token, 0)
-            if idf > 0: # 只有在语料库中出现过的词才有意义
+            if idf > 0: 
                 query_weights[token] = idf
+
+        # DEBUG: 打印查询权重
+        # print(f"[BM25 DEBUG] Query: {query}, Weights: {query_weights}", file=sys.stderr)
 
         if not query_weights:
             return [0.0] * self.corpus_size
@@ -123,20 +121,24 @@ class SimpleBM25:
         for i, doc_tokens in enumerate(corpus_tokens):
             score = 0.0
             doc_len = len(doc_tokens)
-            
-            # 计算文档词频
             doc_tf = self._get_tf(doc_tokens)
+
+            # DEBUG: 记录匹配到的词
+            matched = []
 
             for token, idf_weight in query_weights.items():
                 freq = doc_tf.get(token, 0)
                 if freq == 0:
                     continue
                 
-                # BM25 TF 公式: (freq * (k1 + 1)) / (freq + k1 * (1 - b + b * doc_len / avgdl))
+                matched.append(token)
+                
                 numerator = freq * (self.k1 + 1)
                 denominator = freq + self.k1 * (1 - self.b + self.b * doc_len / self.avgdl)
-                
                 score += idf_weight * (numerator / denominator)
+            
+            if matched: # 只要匹配到就打印
+                print(f"[BM25 HIT] Doc {i} Score={score:.3f} Tokens={matched}", file=sys.stderr)
             
             scores.append(score)
 
