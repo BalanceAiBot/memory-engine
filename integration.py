@@ -66,7 +66,8 @@ def memory_tool_ingest(content: str, category: str = "general",
 
 def semantic_search(query: str, top_k: int = 5,
                     category: str = None,
-                    interleave: int = 1) -> list:
+                    interleave: int = 1,
+                    weighted: bool = True) -> list:
     """
     语义检索记忆 — 替代关键词搜索
     
@@ -75,22 +76,22 @@ def semantic_search(query: str, top_k: int = 5,
         top_k: 返回结果数
         category: 按类别过滤 (可选)
         interleave: 多跳轮数 (1=单轮, 2=多跳)
+        weighted: 是否使用类别加权检索（默认开启，改善模糊查询质量）
     
     Returns:
         检索结果列表 [{"text", "score", "category", "source", "id"}, ...]
     """
     engine = get_engine()
     
-    if interleave > 1:
-        if category:
-            results = engine.query_by_category(query, category, top_k=top_k)
-        else:
-            results = engine.query_interleave(query, top_k=top_k, rounds=interleave)
+    if category:
+        results = engine.query_by_category(query, category, top_k=top_k)
+    elif weighted and interleave <= 1:
+        # 使用类别加权检索
+        results = engine.query_weighted(query, top_k=top_k)
+    elif interleave > 1:
+        results = engine.query_interleave(query, top_k=top_k, rounds=interleave)
     else:
-        if category:
-            results = engine.query_by_category(query, category, top_k=top_k)
-        else:
-            results = engine.query(query, top_k=top_k)
+        results = engine.query(query, top_k=top_k)
     
     # 格式化为精简输出
     formatted = []
@@ -247,6 +248,10 @@ if __name__ == "__main__":
     p_search.add_argument("--top-k", type=int, default=5)
     p_search.add_argument("--category", default=None)
     p_search.add_argument("--interleave", type=int, default=1)
+    p_search.add_argument("--weighted", action="store_true", default=True,
+                          help="使用类别加权检索（默认开启）")
+    p_search.add_argument("--no-weighted", action="store_true",
+                          help="关闭类别加权检索")
     
     # curate
     sub.add_parser("curate", help="自动策展 MEMORY.md")
@@ -269,10 +274,13 @@ if __name__ == "__main__":
         print(f"✅ 入库 {len(result['ingested'])} 条 chunk")
     
     elif args.command == "search":
+        weighted = not args.no_weighted
         results = semantic_search(
-            args.query, args.top_k, args.category, args.interleave
+            args.query, args.top_k, args.category, args.interleave,
+            weighted=weighted,
         )
-        print(f"🔍 检索: {args.query}\n")
+        print(f"检索: {args.query}")
+        print(f"加权检索: {'开启' if weighted else '关闭'}\n")
         for i, r in enumerate(results, 1):
             print(f"  [{i}] score={r['score']:.3f} [{r['category']}]")
             print(f"      {r['text'][:120]}...")

@@ -179,3 +179,95 @@ class Retriever:
         """限定类别的语义检索。"""
         results = self.search(query, top_k=top_k * 3)  # 扩大候选集
         return [r for r in results if r.category == category][:top_k]
+
+    # ── 类别加权检索 ──
+    def search_weighted(
+        self,
+        query: str,
+        top_k: int = DEFAULT_TOP_K,
+        min_score: float = MIN_SIMILARITY,
+        category_weights: dict | None = None,
+    ) -> list[SearchResult]:
+        """类别加权语义检索。
+
+        对模糊查询（如"安全问题"）降低 security_rule 权重，
+        提升 maintenance_log/known_issues 的优先级。
+
+        Args:
+            query: 查询文本
+            top_k: 返回数量
+            min_score: 最低相似度阈值
+            category_weights: 类别权重映射 {category: multiplier}
+                             默认: security_rule=0.5, maintenance_log=1.5
+
+        Returns:
+            SearchResult 列表，按加权分数降序
+        """
+        if self.index.is_empty:
+            return []
+
+        # 默认权重调节
+        default_weights = {
+            "security_rule": 0.5,    # 安全规则默认降权（除非明确问安全规则）
+            "maintenance_log": 1.5,  # 维护日志提权（更可能是用户要的"问题"）
+            "project_memory": 1.2,   # 项目记忆轻微提权
+            "general": 0.7,          # 通用降权
+            "identity": 0.8,
+            "user_profile": 0.8,
+            "dev_tool": 1.0,
+            "learning_note": 0.9,
+        }
+
+        weights = {**default_weights, **(category_weights or {})}
+
+        # 检测查询意图，动态调整权重
+        query_lower = query.lower()
+        if any(kw in query_lower for kw in ["问题", "bug", "错误", "故障", "异常"]):
+            weights["maintenance_log"] = 2.0
+            weights["security_rule"] = 0.3
+        if any(kw in query_lower for kw in ["安全", "规则", "限制", "权限"]):
+            if "规则" in query_lower or "限制" in query_lower:
+                weights["security_rule"] = 1.5
+            else:
+                weights["security_rule"] = 0.3
+                weights["maintenance_log"] = 1.8
+        if any(kw in query_lower for kw in ["模型", "ai", "llm", "claude", "gpt"]):
+            weights["identity"] = 1.5
+            weights["dev_tool"] = 1.3
+            weights["project_memory"] = 1.2
+
+        query_vec = self.embedder.encode_single(query)
+        hits = self.index.search(query_vec, top_k * 3)
+
+        if not hits:
+            return []
+
+        hits = [(cid, score) for cid, score in hits if score >= min_score]
+        if not hits:
+            return []
+
+        chunk_ids = [cid for cid, _ in hits]
+        chunks = self.store.get_chunks_by_ids(chunk_ids)
+        chunk_map = {c["chunk_id"]: c for c in chunks}
+
+        results: list[SearchResult] = []
+        for cid, raw_score in hits:
+            meta = chunk_map.get(cid)
+            if meta is None:
+                continue
+            cat = meta.get("category", "general")
+            weight = weights.get(cat, 1.0)
+            weighted_score = raw_score * weight
+
+            results.append(SearchResult(
+                chunk_id=cid,
+                text=meta["text"],
+                score=round(weighted_score, 4),
+                category=cat,
+                source=meta["source"],
+                metadata=meta.get("metadata", {}),
+                round_num=1,
+            ))
+
+        results.sort(key=lambda r: r.score, reverse=True)
+        return results[:top_k]

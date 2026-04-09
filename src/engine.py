@@ -296,6 +296,12 @@ class MemoryEngine:
 
     def rebuild_index(self):
         """强制重建 FAISS 索引。"""
+        import os
+        # 清除旧索引文件，防止残留
+        for p in [self.index_path, str(Path(self.index_path).with_suffix(".meta.json"))]:
+            if os.path.exists(p):
+                os.remove(p)
+        # 重建空索引
         self.index = VectorIndex(dim=EMBEDDING_DIM, index_path=self.index_path)
         all_chunks = self.store.get_all_chunks()
         if all_chunks:
@@ -307,3 +313,30 @@ class MemoryEngine:
             self.index.save(self.index_path)
             print("✅ 索引重建完成")
         self.retriever.index = self.index
+
+    def query_weighted(
+        self,
+        query: str,
+        top_k: int = DEFAULT_TOP_K,
+        min_score: float = MIN_SIMILARITY,
+        category_weights: dict | None = None,
+    ) -> list[dict]:
+        """类别加权语义检索。
+
+        自动根据查询内容调整类别权重，改善模糊查询的检索质量。
+        例如：查"安全问题"会优先返回维护日志而非安全规则。
+
+        Args:
+            query: 查询文本
+            top_k: 返回数量
+            min_score: 最低相似度阈值
+            category_weights: 自定义类别权重 {category: multiplier}
+
+        Returns:
+            [{\"text\": \"...\", \"score\": 0.92, \"category\": \"...\"}, ...]
+        """
+        results = self.retriever.search_weighted(
+            query, top_k=top_k, min_score=min_score,
+            category_weights=category_weights,
+        )
+        return [r.to_dict() for r in results]
