@@ -206,51 +206,53 @@ python tests/test_engine.py
 ### 1. 修改记忆工具代码
 **目标文件**: `~/.hermes/hermes-agent/tools/memory_tool.py`
 
-#### A. 添加语义搜索函数
+> **优化说明**：为了达到毫秒级响应，我们使用 **HTTP Server** 模式进行通信，而不是 `subprocess`。
+> 确保 Memory Engine Server (`server.py`) 已经运行。
+
+#### A. 添加极速搜索函数
 在文件顶部（`MemoryStore` 类定义之后）添加 `_semantic_search` 函数：
 ```python
-def _semantic_search(query: str, top_k: int = 5) -> Dict[str, Any]:
-    """Use Memory Engine for semantic search."""
-    import subprocess, os, re, json
-    
-    engine_dir = os.path.expanduser("~/Desktop/clawCoder/memory-engine")
-    integration = os.path.join(engine_dir, "integration.py")
-    
-    if not os.path.exists(integration):
-        return {"success": False, "error": "Memory Engine not found."}
+# =============================================================================
+# Semantic Search via Memory Engine (HTTP Server Mode)
+# =============================================================================
 
+_SERVER_URL = "http://127.0.0.1:8089"  # Ensure this matches server.py port
+
+def _semantic_search(query: str, top_k: int = 5) -> Dict[str, Any]:
+    """Use Memory Engine for semantic search via high-speed HTTP server."""
+    import urllib.request
+    from urllib.parse import quote
+    import json
+    
+    url = f"{_SERVER_URL}/search?q={quote(query)}&k={top_k}"
+    
     try:
-        # Call the integration script using Python 3.11
-        result = subprocess.run(
-            ["/opt/homebrew/bin/python3.11", integration, "search", query, "--top-k", str(top_k)],
-            capture_output=True, text=True, timeout=30
-        )
-        
-        # Parse output
-        lines = result.stdout.strip().split('\n')
-        results = []
-        current_entry = None
-        
-        for line in lines:
-            # Match header: [1] score=1.112 [maintenance_log]
-            match = re.search(r'\[(\d+)\]\s+score=([\d.]+)\s+\[([^\]]+)\]', line)
-            if match:
-                if current_entry: results.append(current_entry)
-                current_entry = {
-                    "rank": int(match.group(1)),
-                    "score": float(match.group(2)),
-                    "category": match.group(3),
-                    "text": ""
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            
+            if data.get('success'):
+                return {
+                    "success": True,
+                    "query": query,
+                    "result_count": data.get('result_count', 0),
+                    "results": data.get('results', []),
                 }
-            elif current_entry and line.strip() and not line.strip().startswith('['):
-                current_entry["text"] += line.strip() + " "
-        
-        if current_entry: results.append(current_entry)
-        
-        return {"success": True, "query": query, "results": results}
-        
+            else:
+                return {
+                    "success": False,
+                    "error": data.get('error', 'Unknown server error'),
+                }
+                
+    except urllib.error.URLError as e:
+        if hasattr(e, 'reason') and 'Connection refused' in str(e.reason):
+            return {
+                "success": False,
+                "error": "Memory Server is offline. Please restart it.",
+            }
+        return {"success": False, "error": f"Network error: {e.reason}"}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": f"Request failed: {str(e)}"}
 ```
 
 #### B. 扩展 `memory_tool` 函数
