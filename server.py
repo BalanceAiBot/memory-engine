@@ -8,7 +8,9 @@ import os
 import json
 import threading
 
-sys.path.insert(0, os.path.dirname(__file__))
+# 🔥 关键：开启离线模式，防止网络不稳定导致模型加载崩溃
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
 
 # 必须在导入 torch 之前设置
 os.environ.setdefault("OMP_NUM_THREADS", "1")

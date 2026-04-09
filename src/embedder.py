@@ -26,7 +26,13 @@ class Embedder:
     def __init__(self, model_name: str = "BAAI/bge-small-zh-v1.5"):
         self._model_name = model_name
         self._model = None
-        self._dim = 512
+        # 自动推断维度
+        if "base" in model_name:
+            self._dim = 768
+        elif "large" in model_name:
+            self._dim = 1024
+        else:
+            self._dim = 512
 
     # ── 懒加载 ──
     @property
@@ -36,13 +42,8 @@ class Embedder:
             # 强制 CPU，避免 M4 Mac 上偶尔触发 MPS 异常
             os.environ["SENTENCE_TRANSFORMERS_NO_DEVICE"] = ""
             
-            # 优先使用本地缓存路径，避免联网检查 adapter_config
-            cache_path = os.path.expanduser(
-                "~/.cache/huggingface/hub/models--BAAI--bge-small-zh-v1.5/snapshots/7999e1d3359715c523056ef9478215996d62a620"
-            )
-            model_path = cache_path if os.path.exists(cache_path) else self._model_name
-            
-            self._model = SentenceTransformer(model_path, device="cpu")
+            # 直接使用模型名称，sentence-transformers 会自动处理缓存
+            self._model = SentenceTransformer(self._model_name, device="cpu")
             self._model.eval()
         return self._model
 
