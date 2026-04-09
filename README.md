@@ -199,9 +199,80 @@ python tests/test_engine.py
 - 迁移不会删除原始 MEMORY.md 文件
 - 增量入库时只需调用 `ingest()`，索引自动追加
 
-## 新旧系统对比报告
+## 集成到 Hermes Agent
 
-> 详细对比文档见 [COMPARISON.md](./COMPARISON.md)
+本项目已与 Hermes Agent 的 `memory` 工具无缝集成。
+
+### 1. 修改记忆工具代码
+**目标文件**: `~/.hermes/hermes-agent/tools/memory_tool.py`
+
+#### A. 添加语义搜索函数
+在文件顶部（`MemoryStore` 类定义之后）添加 `_semantic_search` 函数：
+```python
+def _semantic_search(query: str, top_k: int = 5) -> Dict[str, Any]:
+    """Use Memory Engine for semantic search."""
+    import subprocess, os, re, json
+    
+    engine_dir = os.path.expanduser("~/Desktop/clawCoder/memory-engine")
+    integration = os.path.join(engine_dir, "integration.py")
+    
+    if not os.path.exists(integration):
+        return {"success": False, "error": "Memory Engine not found."}
+
+    try:
+        # Call the integration script using Python 3.11
+        result = subprocess.run(
+            ["/opt/homebrew/bin/python3.11", integration, "search", query, "--top-k", str(top_k)],
+            capture_output=True, text=True, timeout=30
+        )
+        
+        # Parse output
+        lines = result.stdout.strip().split('\n')
+        results = []
+        current_entry = None
+        
+        for line in lines:
+            # Match header: [1] score=1.112 [maintenance_log]
+            match = re.search(r'\[(\d+)\]\s+score=([\d.]+)\s+\[([^\]]+)\]', line)
+            if match:
+                if current_entry: results.append(current_entry)
+                current_entry = {
+                    "rank": int(match.group(1)),
+                    "score": float(match.group(2)),
+                    "category": match.group(3),
+                    "text": ""
+                }
+            elif current_entry and line.strip() and not line.strip().startswith('['):
+                current_entry["text"] += line.strip() + " "
+        
+        if current_entry: results.append(current_entry)
+        
+        return {"success": True, "query": query, "results": results}
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+```
+
+#### B. 扩展 `memory_tool` 函数
+找到 `memory_tool` 函数，在 `remove` 动作之后添加 `search` 处理：
+```python
+    elif action == "search":
+        if not content:
+            return tool_error("content (query) is required for 'search' action.", success=False)
+        result = _semantic_search(content, top_k=5)
+        return json.dumps(result, ensure_ascii=False)
+```
+
+#### C. 更新 Schema
+修改 `MEMORY_SCHEMA` 定义，将 `action` 的 `enum` 从 `["add", "replace", "remove"]` 改为 `["add", "replace", "remove", "search"]`。
+
+### 2. 更新系统指令
+在 `AGENTS.md` 和 `SOUL.md` 中添加语义检索的强制指令：
+> "When the user asks about past events... USE THE TOOL: `memory(action='search', content='query')`"
+
+### 3. 生效方式
+- **重启**: 修改代码后必须重启 Hermes Agent (`launchctl kickstart -k ...`)。
+- **验证**: 询问 Agent "上次审计修了什么"，应能触发 `memory` 工具调用。
 
 ### 量化对比
 
