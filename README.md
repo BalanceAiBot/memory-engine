@@ -223,9 +223,15 @@ cp ~/.hermes/memories/memory.db ~/backups/memory/$(date +%Y%m%d)/
 cp ~/.hermes/memories/faiss.index ~/backups/memory/$(date +%Y%m%d)/
 ```
 
-## 集成到 Hermes Agent
-详细的服务管理、故障排查指南见 [DEPLOYMENT.md](./DEPLOYMENT.md)
+## 数据库结构
+SQLite 表结构、FAISS 索引格式详见 [DATABASE.md](./DATABASE.md)
 
+## 更新日志
+版本变更记录见 [CHANGELOG.md](./CHANGELOG.md)
+
+## 集成到 Hermes Agent
+
+本项目已与 Hermes Agent 的 `memory` 工具无缝集成。
 ## 集成到 Hermes Agent
 
 本项目已与 Hermes Agent 的 `memory` 工具无缝集成。
