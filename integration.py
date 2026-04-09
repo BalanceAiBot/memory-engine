@@ -134,7 +134,7 @@ def auto_curate(max_entries: int = 25):
     stats = engine.stats()
     
     # 获取所有条目并按类别优先级排序
-    all_entries = engine.store.get_all()
+    all_entries = engine.store.get_all_chunks()
     all_entries.sort(key=lambda x: priority_order.get(x.get("category", "general"), 9))
     
     # 前 N 条写入 MEMORY.md
