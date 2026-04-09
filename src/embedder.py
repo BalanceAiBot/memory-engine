@@ -35,9 +35,14 @@ class Embedder:
             from sentence_transformers import SentenceTransformer
             # 强制 CPU，避免 M4 Mac 上偶尔触发 MPS 异常
             os.environ["SENTENCE_TRANSFORMERS_NO_DEVICE"] = ""
-            self._model = SentenceTransformer(
-                self._model_name, device="cpu"
+            
+            # 优先使用本地缓存路径，避免联网检查 adapter_config
+            cache_path = os.path.expanduser(
+                "~/.cache/huggingface/hub/models--BAAI--bge-small-zh-v1.5/snapshots/7999e1d3359715c523056ef9478215996d62a620"
             )
+            model_path = cache_path if os.path.exists(cache_path) else self._model_name
+            
+            self._model = SentenceTransformer(model_path, device="cpu")
             self._model.eval()
         return self._model
 
