@@ -73,20 +73,57 @@ class Retriever:
         print(f"[BM25] Index built.")
 
     def _expand_query(self, query: str) -> str:
-        """简单的查询扩展/纠错，提升口语化查询的召回率。"""
+        """
+        查询扩展：将口语/黑话转换为书面语。
+        例如：“挂了” -> “崩溃/错误”，“慢了” -> “延迟”。
+        """
         replacements = {
+            "挂了": "崩溃 错误 失败",
+            "崩了": "崩溃 错误 失败",
+            "挂了": "崩溃 错误 失败",
+            "慢了": "延迟 性能",
+            "卡": "延迟 性能",
             "修了啥": "修复 问题",
             "修了": "修复",
             "啥": "什么",
             "咋回事": "原因 错误",
             "咋了": "原因 错误",
             "出了啥": "发生 问题",
-            "上次": "最近", # "Last time" often implies "recent"
+            "上次": "最近",
+            "查下": "查看 搜索",
         }
         for k, v in replacements.items():
             if k in query:
                 query = query.replace(k, v)
         return query
+
+    def _get_freshness_score(self, text: str) -> float:
+        """
+        计算时间衰减分数。
+        包含最近日期的记忆将获得更高权重。
+        """
+        import re
+        import datetime
+        # 匹配 2026-03-26 格式的日期
+        dates = re.findall(r'(\d{4})-(\d{2})-(\d{2})', text)
+        if not dates:
+            return 1.0 # 没有日期，不衰减也不加分
+
+        # 取最新的日期
+        latest = max([datetime.date(int(y), int(m), int(d)) for y, m, d in dates])
+        today = datetime.date.today() # 假设当前时间是 2026-04-09
+        # 如果是 2026-04-01，差 8 天
+        # 为了测试方便，假设今天是 2026-04-09
+        # days_diff = (datetime.date(2026, 4, 9) - latest).days
+        # 实际上我们直接用 datetime.date.today()，如果今天是 2026-04-09 就对了
+        # 如果环境日期不对，我们手动 fix 一下
+        days_diff = (today - latest).days
+        
+        if days_diff < 0: days_diff = 0
+        
+        # 简单的衰减公式：1 / (1 + alpha * days)
+        # 3 天内 1.0, 1 周后 0.5, 1 月后 0.2
+        return 1.0 / (1.0 + 0.1 * days_diff)
 
     def search(
         self,
@@ -98,86 +135,78 @@ class Retriever:
         """
         执行检索。
         """
-        # 1. Query Expansion
+        # 1. Query Expansion (口语转书面语)
         expanded_query = self._expand_query(query)
-        if expanded_query != query:
-            # print(f"[Hybrid] Expanded query: '{query}' -> '{expanded_query}'")
-            pass
-
-        # 使用扩展后的查询进行搜索 (如果 hybrid=True)
         search_query = expanded_query if hybrid else query
+        
         if self.index.is_empty:
             return []
 
         query_vec = self.embedder.encode_single(search_query)
         
-        # 1. 向量检索 (召回更多候选)
-        import sys
-        print(f"[DEBUG] Query: '{query}', Expanded: '{search_query}'", file=sys.stderr)
-        # 混合模式下多召回一些，因为 BM25 会过滤掉一些
+        # 2. 向量检索 (召回更多候选)
         vec_top_k = top_k * 3 if hybrid else top_k
         vec_hits = self.index.search(query_vec, vec_top_k)
-        print(f"[DEBUG] Vec Hits: {len(vec_hits)}", file=sys.stderr)
-        if vec_hits:
-            print(f"[DEBUG] Top Vec Hit (ID, Score): {vec_hits[0]}", file=sys.stderr)
-            # Print all vec hits to see if there are duplicates
-            print(f"[DEBUG] All Vec Hits:", file=sys.stderr)
-            for rank, (cid, score) in enumerate(vec_hits):
-                print(f"  Rank {rank}: ID={cid} VecScore={score:.3f}", file=sys.stderr)
         
         if not vec_hits:
             return []
 
-        # 2. BM25 检索 (关键词兜底)
+        # 3. BM25 检索 (关键词兜底 + 停用词过滤)
         bm25_scores = {}
         if hybrid and self.bm25:
-            # 计算 BM25 分数
-            bm25_ranked = self.bm25.search(query, self.bm25_corpus_tokens, top_k * 3)
-            
-            # Map corpus index back to chunk_id using the map
+            bm25_ranked = self.bm25.search(query, top_k * 3)
             index_to_chunk_id = {v: k for k, v in self.chunk_id_to_index.items()}
-            
             for idx, score in bm25_ranked:
                 if idx in index_to_chunk_id:
                     chunk_id = index_to_chunk_id[idx]
-                    if score > 0: # 只有匹配到关键词的才计入
+                    if score > 0: 
                         bm25_scores[chunk_id] = score
 
-        # 4. 融合结果 (RRF - Reciprocal Rank Fusion)
+        # 4. 融合结果 (RRF) + 类别优先权
         rrf_results = {}
-        k = 60  # RRF 常数
+        k = 60 
 
-        # 处理向量结果 (权重 1.0)
+        # 检测查询意图：如果是技术/问题类查询，提升 maintenance_log 权重
+        tech_keywords = ["修", "错", "崩", "挂", "问题", "审计", "延迟", "慢", "bug", "死锁", "超时"]
+        is_tech_query = any(kw in query for kw in tech_keywords) or any(kw in expanded_query for kw in tech_keywords)
+
         vec_chunk_ids = [cid for cid, _ in vec_hits]
         vec_chunks = self.store.get_chunks_by_ids(vec_chunk_ids)
         vec_map = {c['chunk_id']: c for c in vec_chunks}
 
+        # 处理向量结果
         for rank, (cid, score) in enumerate(vec_hits):
-            if score < min_score and not hybrid: 
-                continue
+            meta = vec_map.get(cid, {})
+            category = meta.get('category', '')
             
-            # 向量检索权重
-            rrf_results[cid] = rrf_results.get(cid, 0) + 1.0 / (k + rank)
+            # 基础 RRF 分数
+            score_rrf = 1.0 / (k + rank)
+            
+            # 类别加成 (Category Boost)
+            category_boost = 1.0
+            if is_tech_query:
+                if category == 'maintenance_log': category_boost = 3.0  # 大幅提高维护日志权重
+                elif category == 'dev_tool': category_boost = 2.0
+                elif category == 'user_profile': category_boost = 0.5  # 降低用户画像权重 (噪音过滤)
+            
+            rrf_results[cid] = rrf_results.get(cid, 0) + score_rrf * category_boost
 
-        # 处理 BM25 结果 (权重 2.0 - 关键词命中更可信)
+        # 处理 BM25 结果 (技术查询中，关键词匹配权重更高)
         if hybrid and self.bm25:
             bm25_sorted = sorted(bm25_scores.items(), key=lambda x: x[1], reverse=True)
-            print(f"[DEBUG] BM25 Sorted (Top 3): {bm25_sorted[:3]}", file=sys.stderr)
             for rank, (cid, _) in enumerate(bm25_sorted):
-                bm25_weight = 3.0 
-                rrf_results[cid] = rrf_results.get(cid, 0) + bm25_weight / (k + rank)
-                if cid == 9:
-                    print(f"[DEBUG] ID=9 updated by BM25. New Score: {rrf_results[cid]:.4f}", file=sys.stderr)
+                meta = self.store.get_chunk(cid)
+                category = meta.get('category', '') if meta else ''
+                
+                bm25_weight = 3.0
+                if is_tech_query:
+                    if category == 'maintenance_log': bm25_weight = 6.0
+                    elif category == 'user_profile': bm25_weight = 0.5
 
-        # 4. 排序并回填元数据
+                rrf_results[cid] = rrf_results.get(cid, 0) + bm25_weight / (k + rank)
+
+        # 5. 排序并回填元数据
         final_chunk_ids = sorted(rrf_results, key=lambda x: rrf_results[x], reverse=True)[:top_k]
-        
-        # DEBUG: Print Top 5 RRF scores
-        print(f"[DEBUG] Top 5 RRF Results:", file=sys.stderr)
-        for cid in sorted(rrf_results, key=lambda x: rrf_results[x], reverse=True)[:5]:
-            meta = self.store.get_chunk(cid)
-            text_preview = meta['text'][:30] if meta else "Unknown"
-            print(f"  ID={cid} Score={rrf_results[cid]:.4f} Text={text_preview}", file=sys.stderr)
         final_chunks = self.store.get_chunks_by_ids(final_chunk_ids)
         chunk_map = {c['chunk_id']: c for c in final_chunks}
 
@@ -187,17 +216,19 @@ class Retriever:
             if meta is None:
                 continue
             
-            # 如果是混合模式，使用 RRF 分数，否则使用原始向量分数
             if hybrid:
                 final_score = rrf_results[cid]
             else:
-                # Find original vector score
                 for v_cid, v_score in vec_hits:
                     if v_cid == cid:
                         final_score = v_score
                         break
                 else:
                     final_score = 0.0
+
+            # 应用时间衰减 (新记忆优先)
+            time_weight = self._get_freshness_score(meta['text'])
+            final_score *= time_weight
 
             results.append(SearchResult(
                 chunk_id=cid,
