@@ -164,7 +164,7 @@ class Retriever:
 
         # 4. 融合结果 (RRF) + 类别优先权
         rrf_results = {}
-        k = 60 
+        k = 60
 
         # 检测查询意图：如果是技术/问题类查询，提升 maintenance_log 权重
         tech_keywords = ["修", "错", "崩", "挂", "问题", "审计", "延迟", "慢", "bug", "死锁", "超时"]
