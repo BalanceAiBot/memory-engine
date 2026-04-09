@@ -168,17 +168,13 @@ class MemoryEngine:
         top_k: int = DEFAULT_TOP_K,
         min_score: float = MIN_SIMILARITY,
     ) -> list[dict]:
-        """语义检索。
-
-        Args:
-            query: 查询文本
-            top_k: 返回数量
-            min_score: 最低相似度阈值
-
-        Returns:
-            [{"text": "...", "score": 0.92, "category": "...", "source": "..."}, ...]
-        """
-        results = self.retriever.search(query, top_k=top_k, min_score=min_score)
+        """标准语义检索 (支持混合检索)。"""
+        # 确保 BM25 索引是最新的
+        self.retriever.update_bm25_index(self.store.get_all_chunks())
+        
+        results = self.retriever.search(
+            query, top_k=top_k, min_score=min_score, hybrid=True
+        )
         return [r.to_dict() for r in results]
 
     def query_interleave(

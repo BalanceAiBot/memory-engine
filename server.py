@@ -7,8 +7,9 @@ import sys
 import os
 import json
 import threading
-
-# 🔥 关键：开启离线模式，防止网络不稳定导致模型加载崩溃
+import urllib.parse
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_OFFLINE"] = "1"
 
@@ -24,21 +25,28 @@ print("🚀 Loading Memory Engine...")
 try:
     from src.engine import MemoryEngine
     engine = MemoryEngine(db_path=os.path.expanduser("~/.hermes/memories/memory.db"))
-    # 预热模型 (Pre-warm)
+    
+    # 预热: 初始化 BM25 索引
+    engine.retriever.update_bm25_index(engine.store.get_all_chunks())
+    print(f"✅ BM25 Index built ({len(engine.store.get_all_chunks())} chunks)")
+    
+    # 预热模型
     engine.query("warmup", top_k=1)
     print("✅ Memory Engine loaded and warmed up.")
 except Exception as e:
     print(f"❌ Failed to load engine: {e}")
     sys.exit(1)
 
-PORT = 8089
+PORT = 54321
 
 class MemoryHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         
         if parsed.path == '/search':
+            print(f"[SERVER] Raw Path: {self.path}", file=sys.stderr)
             query = parse_qs(parsed.query).get('q', [''])[0]
+            print(f"[SERVER] Decoded Query: {query}", file=sys.stderr)
             top_k = int(parse_qs(parsed.query).get('k', ['5'])[0])
             
             if not query:
@@ -46,8 +54,12 @@ class MemoryHandler(BaseHTTPRequestHandler):
                 return
 
             try:
-                # 使用加权检索
-                results = engine.query_weighted(query, top_k=top_k)
+                # 使用混合检索
+                print(f"[SERVER] Query: {query}")
+                results = engine.query(query, top_k=top_k)
+                print(f"[SERVER] Results: {len(results)}")
+                if results:
+                    print(f"[SERVER] Top 1: {results[0]['category']} - {results[0]['text'][:30]}")
                 response = {
                     "success": True,
                     "query": query,
