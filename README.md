@@ -199,6 +199,33 @@ python tests/test_engine.py
 - 迁移不会删除原始 MEMORY.md 文件
 - 增量入库时只需调用 `ingest()`，索引自动追加
 
+## 自动化维护
+
+本项目提供了自动化记忆维护脚本。
+
+### Heartbeat 集成
+```bash
+# 在 heartbeat 中定期执行
+/opt/homebrew/bin/python3.11 ~/Desktop/clawCoder/memory-engine/heartbeat_memory.py
+```
+自动完成：
+- ✅ 文件变更同步（检查 MEMORY.md 更新）
+- ✅ 重复检测与清理
+## 部署与运维
+详细的服务管理、故障排查指南见 [DEPLOYMENT.md](./DEPLOYMENT.md)
+
+## 数据备份与恢复
+Memory Engine 的数据存储在 `~/.hermes/memories/`：
+```bash
+# 备份
+mkdir -p ~/backups/memory/$(date +%Y%m%d)
+cp ~/.hermes/memories/memory.db ~/backups/memory/$(date +%Y%m%d)/
+cp ~/.hermes/memories/faiss.index ~/backups/memory/$(date +%Y%m%d)/
+```
+
+## 集成到 Hermes Agent
+详细的服务管理、故障排查指南见 [DEPLOYMENT.md](./DEPLOYMENT.md)
+
 ## 集成到 Hermes Agent
 
 本项目已与 Hermes Agent 的 `memory` 工具无缝集成。
